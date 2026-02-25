@@ -1,97 +1,21 @@
-type CrawlerState = {
-  runActive: boolean
-  targetCount: number
-  currentCount: number
-  completedCount: number
-  delayMs: number
-  waitingForCompletion: boolean
-  page1TabId: number | null
-}
+import { MessageType, type CrawlerState, type LogLevel } from "~core/protocol/messages"
+import { handleRuntimeMessage } from "~background/handlers"
+import {
+  loadStateFromStorage,
+  persistStateToStorage
+} from "~background/state-store"
 
-const DEFAULT_STATE: CrawlerState = {
-  runActive: false,
-  targetCount: 2,
-  currentCount: 0,
-  completedCount: 0,
-  delayMs: 1000,
-  waitingForCompletion: false,
-  page1TabId: null
-}
-
-const STATE_KEY = "crawlerState"
 const PAGE2_URL =
   "https://buyin.jinritemai.com/dashboard/merch-picking-library/shop-detail"
 const PAGE3_URL = "https://buyin.jinritemai.com/mpa/pigeonIM"
 
-let state: CrawlerState = { ...DEFAULT_STATE }
-let nextTimer: ReturnType<typeof setTimeout> | null = null
+let state: CrawlerState
 
-type LogMessage = {
-  type: "log"
-  source: "page1" | "page2" | "page3" | "background"
-  level: "log" | "warn" | "error"
-  message: string
-  data?: unknown
-}
+const getState = () => state
 
-const logLocal = (
-  level: LogMessage["level"],
-  message: string,
-  data?: unknown,
-  forward = true
-) => {
-  const prefix = "[crawler][background]"
-  if (level === "error") {
-    console.error(prefix, message, data ?? "")
-    if (forward) {
-      void sendToPage1({
-        type: "log",
-        source: "background",
-        level,
-        message,
-        data
-      })
-    }
-    return
-  }
-  if (level === "warn") {
-    console.warn(prefix, message, data ?? "")
-    if (forward) {
-      void sendToPage1({
-        type: "log",
-        source: "background",
-        level,
-        message,
-        data
-      })
-    }
-    return
-  }
-  console.log(prefix, message, data ?? "")
-  if (forward) {
-    void sendToPage1({
-      type: "log",
-      source: "background",
-      level,
-      message,
-      data
-    })
-  }
-}
-
-const loadState = async () => {
-  try {
-    const stored = await chrome.storage.local.get(STATE_KEY)
-    if (stored && stored[STATE_KEY]) {
-      state = { ...DEFAULT_STATE, ...stored[STATE_KEY] }
-    }
-  } catch {
-    state = { ...DEFAULT_STATE }
-  }
-}
-
-const persistState = async () => {
-  await chrome.storage.local.set({ [STATE_KEY]: state })
+const setState = async (updater: (prev: CrawlerState) => CrawlerState) => {
+  state = updater(state)
+  await persistStateToStorage(state)
 }
 
 const sendToPage1 = async (payload: unknown) => {
@@ -101,197 +25,95 @@ const sendToPage1 = async (payload: unknown) => {
   } catch (error) {
     const message = String(error)
     if (!message.includes("Receiving end does not exist")) {
-      state.page1TabId = null
-      await persistState()
+      state = { ...state, page1TabId: null }
+      await persistStateToStorage(state)
     }
   }
 }
 
+const logLocal = async (level: LogLevel, message: string, data?: unknown) => {
+  const prefix = "[crawler][background]"
+  if (level === "error") {
+    console.error(prefix, message, data ?? "")
+  } else if (level === "warn") {
+    console.warn(prefix, message, data ?? "")
+  } else {
+    console.log(prefix, message, data ?? "")
+  }
+  await sendToPage1({
+    type: MessageType.Log,
+    source: "background",
+    level,
+    message,
+    data
+  })
+}
+
 const broadcastState = async () => {
-  await sendToPage1({ type: "state/update", state })
+  await sendToPage1({
+    type: MessageType.StateUpdate,
+    state
+  })
 }
 
-const shouldTriggerNext = () => {
-  return state.runActive && state.currentCount < state.targetCount
+const openUrlInNewTab = async (url: string, active?: boolean) => {
+  await chrome.tabs.create({
+    url,
+    active: typeof active === "boolean" ? active : false
+  })
 }
 
-loadState().then(() => {
-  persistState()
+const closeSenderTabLater = async (
+  sender: chrome.runtime.MessageSender,
+  delayMs?: number
+) => {
+  const tabId = sender.tab?.id
+  if (!tabId) return false
+  setTimeout(async () => {
+    try {
+      await chrome.tabs.remove(tabId)
+    } catch {
+      return
+    }
+  }, typeof delayMs === "number" ? Math.max(0, delayMs) : 0)
+  return true
+}
+
+void loadStateFromStorage().then(async (loaded) => {
+  state = loaded
+  await persistStateToStorage(state)
 })
 
 chrome.tabs.onCreated.addListener((tab) => {
-  if (!state.runActive) return
+  if (!state?.runActive) return
   if (tab.url?.startsWith(PAGE2_URL)) {
-    logLocal("log", "tab created page2", { tabId: tab.id })
+    void logLocal("log", "tab created page2", { tabId: tab.id })
   }
   if (tab.url?.startsWith(PAGE3_URL)) {
-    logLocal("log", "tab created page3", { tabId: tab.id })
+    void logLocal("log", "tab created page3", { tabId: tab.id })
   }
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (!state.runActive) return
-  if (!changeInfo.url) return
+  if (!state?.runActive || !changeInfo.url) return
   if (changeInfo.url.startsWith(PAGE2_URL)) {
-    logLocal("log", "tab updated page2", { tabId, url: changeInfo.url })
+    void logLocal("log", "tab updated page2", { tabId, url: changeInfo.url })
   }
   if (changeInfo.url.startsWith(PAGE3_URL)) {
-    logLocal("log", "tab updated page3", { tabId, url: changeInfo.url })
+    void logLocal("log", "tab updated page3", { tabId, url: changeInfo.url })
   }
 })
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handle = async () => {
-    switch (message?.type) {
-      case "state/get": {
-        sendResponse({ state })
-        return
-      }
-      case "page1/ready": {
-        if (sender.tab?.id) {
-          state.page1TabId = sender.tab.id
-          await persistState()
-        }
-        logLocal("log", "page1 ready", { tabId: sender.tab?.id })
-        await broadcastState()
-        sendResponse({ ok: true })
-        return
-      }
-      case "run/start": {
-        if (sender.tab?.id) {
-          state.page1TabId = sender.tab.id
-        }
-        state.runActive = true
-        state.targetCount =
-          typeof message.targetCount === "number"
-            ? message.targetCount
-            : state.targetCount
-        state.delayMs =
-          typeof message.delayMs === "number"
-            ? message.delayMs
-            : state.delayMs
-        state.currentCount = 0
-        state.completedCount = 0
-        state.waitingForCompletion = false
-        if (nextTimer) {
-          clearTimeout(nextTimer)
-          nextTimer = null
-        }
-        logLocal("log", "run start", {
-          targetCount: state.targetCount,
-          delayMs: state.delayMs
-        })
-        await persistState()
-        await broadcastState()
-        sendResponse({ ok: true })
-        return
-      }
-      case "run/stop": {
-        state.runActive = false
-        state.waitingForCompletion = false
-        if (nextTimer) {
-          clearTimeout(nextTimer)
-          nextTimer = null
-        }
-        logLocal("warn", "run stop")
-        await persistState()
-        await broadcastState()
-        sendResponse({ ok: true })
-        return
-      }
-      case "progress/current": {
-        if (!state.runActive) {
-          sendResponse({ ok: false })
-          return
-        }
-        state.currentCount = Math.min(
-          state.currentCount + 1,
-          state.targetCount
-        )
-        state.waitingForCompletion = false
-        logLocal("log", "progress current", {
-          currentCount: state.currentCount
-        })
-        await persistState()
-        await broadcastState()
-        sendResponse({ ok: true })
-        return
-      }
-      case "progress/completed": {
-        if (!state.runActive) {
-          sendResponse({ ok: false })
-          return
-        }
-        state.completedCount = Math.min(
-          state.completedCount + 1,
-          state.targetCount
-        )
-        state.waitingForCompletion = false
-        logLocal("log", "progress completed", {
-          completedCount: state.completedCount
-        })
-        if (state.completedCount >= state.targetCount) {
-          state.runActive = false
-          logLocal("log", "run finished")
-        }
-        await persistState()
-        await broadcastState()
-        sendResponse({ ok: true })
-        return
-      }
-      case "log": {
-        const logMessage = message as LogMessage
-        logLocal(
-          logMessage.level,
-          `[${logMessage.source}] ${logMessage.message}`,
-          logMessage.data,
-          false
-        )
-        if (logMessage.source !== "page1") {
-          await sendToPage1(logMessage)
-        }
-        sendResponse({ ok: true })
-        return
-      }
-      case "page1/open-page2": {
-        if (typeof message.url === "string") {
-          const active =
-            typeof message.active === "boolean" ? message.active : false
-          logLocal("log", "open page2", { url: message.url, active })
-          await chrome.tabs.create({ url: message.url, active })
-        }
-        sendResponse({ ok: true })
-        return
-      }
-      case "page3/capture": {
-        await sendToPage1(message)
-        sendResponse({ ok: true })
-        return
-      }
-      case "tab/close-self": {
-        const tabId = sender.tab?.id
-        if (!tabId) {
-          sendResponse({ ok: false })
-          return
-        }
-        const delayMs =
-          typeof message.delayMs === "number" ? Math.max(0, message.delayMs) : 0
-        setTimeout(async () => {
-          try {
-            await chrome.tabs.remove(tabId)
-          } catch {
-            return
-          }
-        }, delayMs)
-        sendResponse({ ok: true })
-        return
-      }
-      default: {
-        sendResponse({ ok: false })
-      }
-    }
-  }
-
-  handle()
+  void handleRuntimeMessage(message, sender, sendResponse, {
+    getState,
+    setState,
+    persistState: async () => persistStateToStorage(state),
+    broadcastState,
+    sendToPage1,
+    logLocal,
+    openUrlInNewTab,
+    closeSenderTabLater
+  })
   return true
 })

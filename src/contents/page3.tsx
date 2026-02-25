@@ -1,35 +1,19 @@
 import type { PlasmoCSConfig } from "plasmo"
 import { useEffect } from "react"
 
-import { injectScript } from "~lib/inject-script"
+import { createRuntimeLogger } from "~core/logging/logger"
+import {
+  MessageType,
+  type Page3CaptureMessage,
+  type RuntimeAckResponse,
+  type RuntimeStateResponse
+} from "~core/protocol/messages"
+import { injectFetchHook } from "~services/injection/script-injector"
+import { sendRuntimeMessage } from "~services/runtime/messenger"
 import { simulateClick } from "~lib/simulate-click"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://buyin.jinritemai.com/mpa/pigeonIM*"]
-}
-
-type CrawlerState = {
-  runActive: boolean
-}
-
-type LogMessage = {
-  type: "log"
-  source: "page1" | "page2" | "page3" | "background"
-  level: "log" | "warn" | "error"
-  message: string
-  data?: unknown
-}
-
-type Page3CaptureMessage = {
-  type: "page3/capture"
-  payload: {
-    requestType: "xhr" | "fetch"
-    url: string
-    method: string
-    status: number
-    body: unknown
-    time: number
-  }
 }
 
 const INJECTED_SCRIPT_ID = "plasmo-fetch-hook"
@@ -48,136 +32,104 @@ const shouldCollectUrl = (url: string) => {
 }
 
 const Page3Content = () => {
-  useEffect(() => {
-    if (!chrome?.runtime?.id) {
-      return
-    }
+  const logger = createRuntimeLogger("page3")
 
-    const logToBackground = (
-      level: LogMessage["level"],
-      message: string,
-      data?: unknown
-    ) => {
-      const payload: LogMessage = {
-        type: "log",
-        source: "page3",
-        level,
-        message,
-        data
-      }
-      console[level]("[crawler][page3]", message, data ?? "")
-      chrome.runtime.sendMessage(payload)
-    }
+  useEffect(() => {
+    if (!chrome?.runtime?.id) return
 
     let cleanup = () => {}
 
-    chrome.runtime.sendMessage({ type: "state/get" }, (response) => {
-      const state: CrawlerState | undefined = response?.state
-      if (!state?.runActive) {
-        logToBackground("warn", "skip: run inactive")
-        return
-      }
+    void sendRuntimeMessage<RuntimeStateResponse>({ type: MessageType.StateGet }).then(
+      async (result) => {
+        if (!result.ok || !result.response?.state) {
+          logger.error("state get failed", result.error)
+          return
+        }
+        if (!result.response.state.runActive) {
+          logger.warn("skip: run inactive")
+          return
+        }
 
-      logToBackground("log", "page3 start")
+        logger.log("page3 start")
+        const found = {
+          contact: false,
+          detail: false
+        }
+        let completedSent = false
 
-      const found = {
-        contact: false,
-        detail: false
-      }
-      let completedSent = false
+        const handler = (event: MessageEvent) => {
+          if (event.source !== window) return
+          const data = event.data
+          if (!data || data.source !== INJECTED_SCRIPT_ID) return
+          if (!shouldCollectUrl(data.url)) return
 
-      const handler = (event: MessageEvent) => {
-        if (event.source !== window) return
-
-        const data = event.data
-        if (!data || data.source !== INJECTED_SCRIPT_ID) return
-        if (!shouldCollectUrl(data.url)) return
-
-        const captureMessage: Page3CaptureMessage = {
-          type: "page3/capture",
-          payload: {
-            requestType: data.type === "xhr" ? "xhr" : "fetch",
-            url: data.url,
-            method: typeof data.method === "string" ? data.method : "GET",
-            status: typeof data.status === "number" ? data.status : 0,
-            body: data.body,
-            time: typeof data.time === "number" ? data.time : Date.now()
+          const captureMessage: Page3CaptureMessage = {
+            type: MessageType.Page3Capture,
+            payload: {
+              requestType: data.type === "xhr" ? "xhr" : "fetch",
+              url: data.url,
+              method: typeof data.method === "string" ? data.method : "GET",
+              status: typeof data.status === "number" ? data.status : 0,
+              body: data.body,
+              time: typeof data.time === "number" ? data.time : Date.now()
+            }
           }
-        }
-        chrome.runtime.sendMessage(captureMessage)
+          void sendRuntimeMessage<RuntimeAckResponse>(captureMessage)
 
-        if (data.url.includes("/connection/pc/im/shop/contact")) {
-          found.contact = true
-        }
-        if (data.url.includes("/connection/pc/im/shop/detail")) {
-          found.detail = true
-        }
+          if (data.url.includes("/connection/pc/im/shop/contact")) {
+            found.contact = true
+          }
+          if (data.url.includes("/connection/pc/im/shop/detail")) {
+            found.detail = true
+          }
 
-        if (!completedSent && found.contact && found.detail) {
-          completedSent = true
-          logToBackground("log", "requests matched, send completed")
-          chrome.runtime.sendMessage({ type: "progress/completed" })
-          chrome.runtime.sendMessage({
-            type: "tab/close-self",
-            delayMs: AUTO_CLOSE_DELAY_MS
-          })
-          logToBackground("log", "page3 will close in 3s")
-        }
-      }
-
-      window.addEventListener("message", handler)
-
-      const scriptUrl = chrome.runtime.getURL("assets/fetch-hook.js")
-      logToBackground("log", "inject script", { scriptUrl })
-
-      const scheduleAutoClick = () => {
-        const start = Date.now()
-        const tryClick = () => {
-          const target = document.querySelector(AUTO_CLICK_SELECTOR)
-          if (target) {
-            simulateClick({
-              document,
-              selector: AUTO_CLICK_SELECTOR
+          // 关键完成条件：两个接口都捕获到才算完成
+          if (!completedSent && found.contact && found.detail) {
+            completedSent = true
+            logger.log("requests matched, send completed")
+            void sendRuntimeMessage<RuntimeAckResponse>({
+              type: MessageType.ProgressCompleted
             })
-            logToBackground("log", "auto click ok")
-            return
+            void sendRuntimeMessage<RuntimeAckResponse>({
+              type: MessageType.TabCloseSelf,
+              delayMs: AUTO_CLOSE_DELAY_MS
+            })
+            logger.log("page3 will close in 3s")
           }
-          if (Date.now() - start >= AUTO_CLICK_TIMEOUT_MS) {
-            logToBackground("warn", "auto click timeout")
-            return
-          }
-          window.setTimeout(tryClick, AUTO_CLICK_POLL_MS)
         }
 
-        window.setTimeout(tryClick, 3000)
-      }
+        window.addEventListener("message", handler)
+        injectFetchHook({
+          elementId: INJECTED_SCRIPT_ID,
+          onLoad: () => {
+            logger.log("script loaded")
+            const start = Date.now()
+            const tryClick = () => {
+              const target = document.querySelector(AUTO_CLICK_SELECTOR)
+              if (target) {
+                simulateClick({ document, selector: AUTO_CLICK_SELECTOR })
+                logger.log("auto click ok")
+                return
+              }
+              if (Date.now() - start >= AUTO_CLICK_TIMEOUT_MS) {
+                logger.warn("auto click timeout")
+                return
+              }
+              window.setTimeout(tryClick, AUTO_CLICK_POLL_MS)
+            }
+            window.setTimeout(tryClick, 3000)
+          },
+          onError: (event) => logger.error("script load failed", String(event))
+        })
 
-      injectScript({
-        elementId: INJECTED_SCRIPT_ID,
-        src: scriptUrl,
-        onLoad: () => {
-          logToBackground("log", "script loaded")
-          scheduleAutoClick()
-        },
-        onError: (event) => {
-          logToBackground("error", "script load failed", String(event))
+        cleanup = () => {
+          window.removeEventListener("message", handler)
         }
-      })
-
-      const statusTimeout = window.setTimeout(() => {
-        return
-      }, 3000)
-
-      cleanup = () => {
-        window.removeEventListener("message", handler)
-        window.clearTimeout(statusTimeout)
       }
-    })
+    )
 
-    return () => {
-      cleanup()
-    }
-  }, [])
+    return () => cleanup()
+  }, [logger])
 
   return null
 }

@@ -1,21 +1,21 @@
 import type { PlasmoCSConfig } from "plasmo"
 import { useEffect } from "react"
 
-import { injectScript } from "~lib/inject-script"
+import { createRuntimeLogger } from "~core/logging/logger"
+import {
+  MessageType,
+  type RuntimeAckResponse,
+  type RuntimeStateResponse
+} from "~core/protocol/messages"
+import { extractBuyinId } from "~domain/capture/parsers"
+import { injectFetchHook } from "~services/injection/script-injector"
+import { sendRuntimeMessage } from "~services/runtime/messenger"
 import { simulateClick } from "~lib/simulate-click"
 
 export const config: PlasmoCSConfig = {
   matches: [
     "https://buyin.jinritemai.com/dashboard/merch-picking-library/shop-detail*"
   ]
-}
-
-type LogMessage = {
-  type: "log"
-  source: "page1" | "page2" | "page3" | "background"
-  level: "log" | "warn" | "error"
-  message: string
-  data?: unknown
 }
 
 const INJECTED_SCRIPT_ID = "plasmo-page2-fetch-hook"
@@ -27,14 +27,6 @@ const CLICK_POLL_MS = 250
 const CLICK_TIMEOUT_MS = 5000
 const ENABLED_TIMEOUT_MS = 8000
 const AUTO_CLOSE_DELAY_MS = 3000
-
-const extractBuyinId = (body: unknown): string | null => {
-  if (!body || typeof body !== "object") return null
-  const parsed = body as { data?: { buyin_account_id?: string | number } }
-  const buyinId = parsed.data?.buyin_account_id
-  if (buyinId === undefined || buyinId === null) return null
-  return String(buyinId)
-}
 
 const waitForSelector = (selector: string, timeoutMs: number) => {
   const start = Date.now()
@@ -78,30 +70,16 @@ const waitForEnabled = (target: Element, timeoutMs: number) => {
 }
 
 const Page2Content = () => {
+  const logger = createRuntimeLogger("page2")
+
   useEffect(() => {
     if (!chrome?.runtime?.id) return
-
-    const logToBackground = (
-      level: LogMessage["level"],
-      message: string,
-      data?: unknown
-    ) => {
-      const payload: LogMessage = {
-        type: "log",
-        source: "page2",
-        level,
-        message,
-        data
-      }
-      console[level]("[crawler][page2]", message, data ?? "")
-      chrome.runtime.sendMessage(payload)
-    }
 
     const openedBuyinIds = new Set<string>()
     let closeScheduled = false
     const clickGuardKey = "__crawler_page2_clicked__"
 
-    const onWindowMessage = (event: MessageEvent) => {
+    const onWindowMessage = async (event: MessageEvent) => {
       if (event.source !== window) return
       const data = event.data
       if (!data || data.source !== "plasmo-fetch-hook") return
@@ -112,62 +90,59 @@ const Page2Content = () => {
 
       const buyinId = extractBuyinId(data.body)
       if (!buyinId) {
-        logToBackground("warn", "account hook matched but buyinId missing", {
-          url: data.url
-        })
+        logger.warn("account hook matched but buyinId missing", { url: data.url })
         return
       }
       if (openedBuyinIds.has(buyinId)) {
-        logToBackground("log", "skip duplicate buyinId", { buyinId })
+        logger.log("skip duplicate buyinId", { buyinId })
         return
       }
       openedBuyinIds.add(buyinId)
-      const url = `${PAGE3_BASE_URL}?buyinId=${encodeURIComponent(buyinId)}`
-      chrome.runtime.sendMessage({ type: "page1/open-page2", url }, (response) => {
-        if (chrome.runtime.lastError) {
-          logToBackground("error", "open page3 failed", {
-            error: chrome.runtime.lastError.message,
-            buyinId
-          })
-          return
-        }
-        if (!response?.ok) {
-          logToBackground("warn", "open page3 response not ok", response)
-          return
-        }
-        logToBackground("log", "opened page3 with buyinId", { buyinId })
-        if (!closeScheduled) {
-          closeScheduled = true
-          chrome.runtime.sendMessage({
-            type: "tab/close-self",
-            delayMs: AUTO_CLOSE_DELAY_MS
-          })
-          logToBackground("log", "page2 will close in 3s")
-        }
-      })
-    }
 
-    chrome.runtime.sendMessage({ type: "state/get" }, (response) => {
-      if (chrome.runtime.lastError) {
-        logToBackground("error", "state get failed", {
-          error: chrome.runtime.lastError.message
+      const page3Url = `${PAGE3_BASE_URL}?buyinId=${encodeURIComponent(buyinId)}`
+      const openResult = await sendRuntimeMessage<RuntimeAckResponse>({
+        type: MessageType.OpenUrl,
+        url: page3Url
+      })
+      if (!openResult.ok || !openResult.response?.ok) {
+        logger.error("open page3 failed", {
+          error: openResult.error ?? openResult.response,
+          buyinId
         })
         return
       }
-      if (!response?.state?.runActive) {
-        logToBackground("warn", "skip page2 hook: run inactive")
-        return
-      }
 
-      if ((window as unknown as Record<string, boolean>)[clickGuardKey]) {
-        logToBackground("warn", "skip click: already clicked in this tab")
-        return
+      logger.log("opened page3 with buyinId", { buyinId })
+      if (!closeScheduled) {
+        closeScheduled = true
+        void sendRuntimeMessage<RuntimeAckResponse>({
+          type: MessageType.TabCloseSelf,
+          delayMs: AUTO_CLOSE_DELAY_MS
+        })
+        logger.log("page2 will close in 3s")
       }
+    }
 
-      ;(async () => {
+    void sendRuntimeMessage<RuntimeStateResponse>({ type: MessageType.StateGet }).then(
+      async (result) => {
+        if (!result.ok || !result.response?.state) {
+          logger.error("state get failed", result.error)
+          return
+        }
+        if (!result.response.state.runActive) {
+          logger.warn("skip page2 hook: run inactive")
+          return
+        }
+
+        if ((window as unknown as Record<string, boolean>)[clickGuardKey]) {
+          logger.warn("skip click: already clicked in this tab")
+          return
+        }
+
+        // 关键业务：先触发页面原生按钮，再监听账户请求拿 buyinId
         const target = await waitForSelector(PAGE2_CLICK_SELECTOR, CLICK_TIMEOUT_MS)
         if (!target) {
-          logToBackground("warn", "page2 button selector not found", {
+          logger.warn("page2 button selector not found", {
             selector: PAGE2_CLICK_SELECTOR
           })
           return
@@ -175,7 +150,7 @@ const Page2Content = () => {
 
         const enabled = await waitForEnabled(target, ENABLED_TIMEOUT_MS)
         if (!enabled) {
-          logToBackground("warn", "page2 button still disabled", {
+          logger.warn("page2 button still disabled", {
             selector: PAGE2_CLICK_SELECTOR
           })
           return
@@ -186,35 +161,29 @@ const Page2Content = () => {
           if (target instanceof HTMLElement) {
             target.scrollIntoView({ block: "center" })
             target.click()
-            logToBackground("log", "page2 element.click() fired")
+            logger.log("page2 element.click() fired")
           }
           simulateClick({ document, selector: PAGE2_CLICK_SELECTOR })
-          logToBackground("log", "page2 button clicked")
+          logger.log("page2 button clicked")
         } catch (error) {
           ;(window as unknown as Record<string, boolean>)[clickGuardKey] = false
-          logToBackground("error", "page2 click failed", String(error))
+          logger.error("page2 click failed", String(error))
         }
-      })()
 
-      const scriptUrl = chrome.runtime.getURL("assets/fetch-hook.js")
-      injectScript({
-        elementId: INJECTED_SCRIPT_ID,
-        src: scriptUrl,
-        onLoad: () => {
-          logToBackground("log", "page2 hook injected")
-        },
-        onError: (event) => {
-          logToBackground("error", "page2 hook inject failed", String(event))
-        }
-      })
-      window.addEventListener("message", onWindowMessage)
-      logToBackground("log", "page2 account listener ready")
-    })
+        injectFetchHook({
+          elementId: INJECTED_SCRIPT_ID,
+          onLoad: () => logger.log("page2 hook injected"),
+          onError: (event) => logger.error("page2 hook inject failed", String(event))
+        })
+        window.addEventListener("message", onWindowMessage)
+        logger.log("page2 account listener ready")
+      }
+    )
 
     return () => {
       window.removeEventListener("message", onWindowMessage)
     }
-  }, [])
+  }, [logger])
 
   return null
 }
