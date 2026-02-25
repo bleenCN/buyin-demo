@@ -28,6 +28,14 @@
   "manifest": {
     "host_permissions": [
       "https://*/*"
+    ],
+    "web_accessible_resources": [
+      {
+        "resources": ["assets/*", "assets/fetch-hook.js"],
+        "matches": [
+          "<all_urls>"
+        ]
+      }
     ]
   }
 }

@@ -102,7 +102,7 @@ export const DraggblePannel: React.FC<DraggblePannelProps> = ({
         top: position.top,
         right: position.right,
         bottom: position.bottom,
-        opacity: dragging ? 0.6 : 1,
+        opacity: dragging ? 0.8 : 1,
         zIndex: 10000,
         ...style
       }}

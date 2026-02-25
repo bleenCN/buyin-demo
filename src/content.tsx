@@ -1,5 +1,6 @@
 import cssText from "data-text:~style.css"
 import type { PlasmoCSConfig } from "plasmo"
+import { useEffect, useMemo, useState } from "react"
 
 import { CountButton } from "~features/count-button"
 import { DraggblePannel } from "~ui/draggble-pannel"
@@ -37,10 +38,138 @@ export const getStyle = (): HTMLStyleElement => {
   return styleElement
 }
 
+
+type HookRecord = {
+  id: string
+  type: "xhr" | "fetch"
+  url: string
+  method: string
+  status: number
+  body: unknown
+  time: number
+}
+
+const MAX_RECORDS = 50
+const INJECTED_SCRIPT_ID = "plasmo-fetch-hook"
+
 const PlasmoOverlay = () => {
+  const [records, setRecords] = useState<HookRecord[]>([])
+
+  useEffect(() => {
+    console.log("[plasmo-fetch-hook] content init")
+    if (!chrome?.runtime?.id) {
+      console.warn("[plasmo-fetch-hook] no runtime id; skip injection")
+      return
+    }
+    const handler = (event: MessageEvent) => {
+      if (event.source !== window) return
+
+      const data = event.data
+      if (!data || data.source !== INJECTED_SCRIPT_ID) return
+
+      if (data.type === "status") {
+        console.log(
+          "[plasmo-fetch-hook] status",
+          data.phase,
+          data.detail || ""
+        )
+      } else {
+        console.log("[plasmo-fetch-hook] message received", data.type, data.url)
+      }
+      setRecords((prev) => {
+        const next: HookRecord[] = [
+          {
+            id: `${data.time}-${Math.random().toString(16).slice(2)}`,
+            type: data.type,
+            url: data.url,
+            method: data.method,
+            status: data.status,
+            body: data.body,
+            time: data.time
+          },
+          ...prev
+        ]
+
+        return next.slice(0, MAX_RECORDS)
+      })
+    }
+
+    window.addEventListener("message", handler)
+    console.log("[plasmo-fetch-hook] listener attached")
+    if (!document.getElementById(INJECTED_SCRIPT_ID)) {
+      const script = document.createElement("script")
+      script.id = INJECTED_SCRIPT_ID
+      script.src = chrome.runtime.getURL("assets/fetch-hook.js")
+      script.async = false
+      script.onload = () => {
+        console.log("[plasmo-fetch-hook] script loaded")
+      }
+      script.onerror = (event) => {
+        console.error("[plasmo-fetch-hook] script load failed", event)
+      }
+      console.log("[plasmo-fetch-hook] inject script", script.src)
+      ;(document.head || document.documentElement).appendChild(script)
+      console.log("[plasmo-fetch-hook] script injected")
+    }
+    
+    const statusTimeout = window.setTimeout(() => {
+      console.warn("[plasmo-fetch-hook] no status or requests after 3s")
+    }, 3000)
+
+    return () => {
+      window.removeEventListener("message", handler)
+      window.clearTimeout(statusTimeout)
+      console.log("[plasmo-fetch-hook] listener removed")
+    }
+  }, [])
+
+  const renderBody = useMemo(() => {
+    return (body: unknown) => {
+      if (body === null || body === undefined) return ""
+      if (typeof body === "string") {
+        return body.length > 1200 ? `${body.slice(0, 1200)}…` : body
+      }
+
+      try {
+        const text = JSON.stringify(body)
+        return text.length > 1200 ? `${text.slice(0, 1200)}…` : text
+      } catch {
+        return String(body)
+      }
+    }
+  }, [])
+
   return (
     <DraggblePannel top={200} right={80}>
       <CountButton />
+      <div className="plasmo-mt-3 plasmo-w-80 plasmo-max-h-96 plasmo-overflow-auto plasmo-space-y-2 plasmo-text-xs">
+        {records.length === 0 ? (
+          <div className="plasmo-text-slate-500">
+            No matching requests yet.
+          </div>
+        ) : (
+          records.map((record) => (
+            <div
+              key={record.id}
+              className="plasmo-rounded-md plasmo-border plasmo-border-slate-200 plasmo-bg-white plasmo-p-2 plasmo-shadow-sm">
+              <div className="plasmo-flex plasmo-items-center plasmo-justify-between plasmo-text-[11px] plasmo-text-slate-600">
+                <span className="plasmo-font-semibold">
+                  {record.method} {record.status}
+                </span>
+                <span>{new Date(record.time).toLocaleTimeString()}</span>
+              </div>
+              <div className="plasmo-mt-1 plasmo-break-all plasmo-text-slate-800">
+                {record.url}
+              </div>
+              {record.body ? (
+                <pre className="plasmo-mt-1 plasmo-max-h-40 plasmo-overflow-auto plasmo-whitespace-pre-wrap plasmo-text-[11px] plasmo-text-slate-700">
+                  {renderBody(record.body)}
+                </pre>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
     </DraggblePannel>
   )
 }
