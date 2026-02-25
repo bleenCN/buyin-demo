@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 
 import { CountButton } from "~features/count-button"
 import { injectScript } from "~lib/inject-script"
+import { simulateClick } from "~lib/simulate-click"
 import { DraggblePannel } from "~ui/draggble-pannel"
 
 export const config: PlasmoCSConfig = {
@@ -50,8 +51,27 @@ type HookRecord = {
   time: number
 }
 
-const MAX_RECORDS = 50
 const INJECTED_SCRIPT_ID = "plasmo-fetch-hook"
+const AUTO_CLICK_SELECTOR =
+  "div.SideTabs_side_hsIdm.WorkStation_rightSide_eYMei > div:nth-child(1) > div:nth-child(1)"
+const AUTO_CLICK_POLL_MS = 250
+const AUTO_CLICK_TIMEOUT_MS = 5000
+const ALLOWED_URL_SUBSTRINGS = [
+  "/connection/pc/im/shop/contact",
+  "/connection/pc/im/shop/detail"
+]
+
+const shouldCollectUrl = (url: string) => {
+  return ALLOWED_URL_SUBSTRINGS.some((allowed) => url.includes(allowed))
+}
+
+const upsertRecord = (
+  prev: HookRecord[],
+  nextRecord: HookRecord
+): HookRecord[] => {
+  const next = prev.filter((record) => record.url !== nextRecord.url)
+  return [nextRecord, ...next].slice(0, 2)
+}
 
 const PlasmoOverlay = () => {
   const [records, setRecords] = useState<HookRecord[]>([])
@@ -77,37 +97,57 @@ const PlasmoOverlay = () => {
       } else {
         console.log("[plasmo-fetch-hook] message received", data.type, data.url)
       }
-      setRecords((prev) => {
-        const next: HookRecord[] = [
-          {
-            id: `${data.time}-${Math.random().toString(16).slice(2)}`,
-            type: data.type,
-            url: data.url,
-            method: data.method,
-            status: data.status,
-            body: data.body,
-            time: data.time
-          },
-          ...prev
-        ]
-
-        return next.slice(0, MAX_RECORDS)
-      })
+      if (!shouldCollectUrl(data.url)) return
+      setRecords((prev) =>
+        upsertRecord(prev, {
+          id: `${data.time}-${Math.random().toString(16).slice(2)}`,
+          type: data.type,
+          url: data.url,
+          method: data.method,
+          status: data.status,
+          body: data.body,
+          time: data.time
+        })
+      )
     }
 
     window.addEventListener("message", handler)
     console.log("[plasmo-fetch-hook] listener attached")
     const scriptUrl = chrome.runtime.getURL("assets/fetch-hook.js")
+
+    const scheduleAutoClick = () => {
+      const start = Date.now()
+      const tryClick = () => {
+        const target = document.querySelector(AUTO_CLICK_SELECTOR)
+        if (target) {
+          simulateClick({
+            document,
+            selector: AUTO_CLICK_SELECTOR
+          })
+          console.log("[plasmo-fetch-hook] auto click ok")
+          return
+        }
+        if (Date.now() - start >= AUTO_CLICK_TIMEOUT_MS) {
+          console.warn("[plasmo-fetch-hook] auto click target not found")
+          return
+        }
+        window.setTimeout(tryClick, AUTO_CLICK_POLL_MS)
+      }
+
+      window.setTimeout(tryClick, 3000)
+    }
+
     const injected = injectScript({
       elementId: INJECTED_SCRIPT_ID,
       src: scriptUrl,
       onLoad: () => {
         console.log("[plasmo-fetch-hook] script loaded")
+        scheduleAutoClick()
       },
       onError: (event) => {
         console.error("[plasmo-fetch-hook] script load failed", event)
       }
-  })
+    })
     if (injected) {
       console.log("[plasmo-fetch-hook] inject script", scriptUrl)
       console.log("[plasmo-fetch-hook] script injected")
