@@ -30,10 +30,10 @@ export const injectScript = ({
   script.src = resolveScriptSrc(src)
   script.async = false
   if (onLoad) {
-    script.onload = () => onLoad(script)
+    script.addEventListener("load", () => onLoad(script), { once: true })
   }
   if (onError) {
-    script.onerror = (event) => onError(event)
+    script.addEventListener("error", (event) => onError(event), { once: true })
   }
 
   ;(document.head || document.documentElement).appendChild(script)
