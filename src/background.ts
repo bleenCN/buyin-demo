@@ -268,6 +268,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true })
         return
       }
+      case "tab/close-self": {
+        const tabId = sender.tab?.id
+        if (!tabId) {
+          sendResponse({ ok: false })
+          return
+        }
+        const delayMs =
+          typeof message.delayMs === "number" ? Math.max(0, message.delayMs) : 0
+        setTimeout(async () => {
+          try {
+            await chrome.tabs.remove(tabId)
+          } catch {
+            return
+          }
+        }, delayMs)
+        sendResponse({ ok: true })
+        return
+      }
       default: {
         sendResponse({ ok: false })
       }

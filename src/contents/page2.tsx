@@ -26,6 +26,7 @@ const PAGE2_CLICK_SELECTOR =
 const CLICK_POLL_MS = 250
 const CLICK_TIMEOUT_MS = 5000
 const ENABLED_TIMEOUT_MS = 8000
+const AUTO_CLOSE_DELAY_MS = 3000
 
 const extractBuyinId = (body: unknown): string | null => {
   if (!body || typeof body !== "object") return null
@@ -97,6 +98,7 @@ const Page2Content = () => {
     }
 
     const openedBuyinIds = new Set<string>()
+    let closeScheduled = false
     const clickGuardKey = "__crawler_page2_clicked__"
 
     const onWindowMessage = (event: MessageEvent) => {
@@ -134,6 +136,14 @@ const Page2Content = () => {
           return
         }
         logToBackground("log", "opened page3 with buyinId", { buyinId })
+        if (!closeScheduled) {
+          closeScheduled = true
+          chrome.runtime.sendMessage({
+            type: "tab/close-self",
+            delayMs: AUTO_CLOSE_DELAY_MS
+          })
+          logToBackground("log", "page2 will close in 3s")
+        }
       })
     }
 

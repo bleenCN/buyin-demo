@@ -37,6 +37,7 @@ const AUTO_CLICK_SELECTOR =
   "div.SideTabs_side_hsIdm.WorkStation_rightSide_eYMei > div:nth-child(1) > div:nth-child(1)"
 const AUTO_CLICK_POLL_MS = 250
 const AUTO_CLICK_TIMEOUT_MS = 5000
+const AUTO_CLOSE_DELAY_MS = 3000
 const ALLOWED_URL_SUBSTRINGS = [
   "/connection/pc/im/shop/contact",
   "/connection/pc/im/shop/detail"
@@ -116,6 +117,11 @@ const Page3Content = () => {
           completedSent = true
           logToBackground("log", "requests matched, send completed")
           chrome.runtime.sendMessage({ type: "progress/completed" })
+          chrome.runtime.sendMessage({
+            type: "tab/close-self",
+            delayMs: AUTO_CLOSE_DELAY_MS
+          })
+          logToBackground("log", "page3 will close in 3s")
         }
       }
 
