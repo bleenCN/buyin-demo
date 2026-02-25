@@ -3,6 +3,7 @@ import type { PlasmoCSConfig } from "plasmo"
 import { useEffect, useMemo, useState } from "react"
 
 import { CountButton } from "~features/count-button"
+import { injectScript } from "~lib/inject-script"
 import { DraggblePannel } from "~ui/draggble-pannel"
 
 export const config: PlasmoCSConfig = {
@@ -96,19 +97,19 @@ const PlasmoOverlay = () => {
 
     window.addEventListener("message", handler)
     console.log("[plasmo-fetch-hook] listener attached")
-    if (!document.getElementById(INJECTED_SCRIPT_ID)) {
-      const script = document.createElement("script")
-      script.id = INJECTED_SCRIPT_ID
-      script.src = chrome.runtime.getURL("assets/fetch-hook.js")
-      script.async = false
-      script.onload = () => {
+    const scriptUrl = chrome.runtime.getURL("assets/fetch-hook.js")
+    const injected = injectScript({
+      elementId: INJECTED_SCRIPT_ID,
+      src: scriptUrl,
+      onLoad: () => {
         console.log("[plasmo-fetch-hook] script loaded")
-      }
-      script.onerror = (event) => {
+      },
+      onError: (event) => {
         console.error("[plasmo-fetch-hook] script load failed", event)
       }
-      console.log("[plasmo-fetch-hook] inject script", script.src)
-      ;(document.head || document.documentElement).appendChild(script)
+  })
+    if (injected) {
+      console.log("[plasmo-fetch-hook] inject script", scriptUrl)
       console.log("[plasmo-fetch-hook] script injected")
     }
     
