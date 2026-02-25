@@ -261,6 +261,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true })
         return
       }
+      case "page3/capture": {
+        await sendToPage1(message)
+        sendResponse({ ok: true })
+        return
+      }
       default: {
         sendResponse({ ok: false })
       }

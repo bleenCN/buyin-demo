@@ -20,6 +20,18 @@ type LogMessage = {
   data?: unknown
 }
 
+type Page3CaptureMessage = {
+  type: "page3/capture"
+  payload: {
+    requestType: "xhr" | "fetch"
+    url: string
+    method: string
+    status: number
+    body: unknown
+    time: number
+  }
+}
+
 const INJECTED_SCRIPT_ID = "plasmo-fetch-hook"
 const AUTO_CLICK_SELECTOR =
   "div.SideTabs_side_hsIdm.WorkStation_rightSide_eYMei > div:nth-child(1) > div:nth-child(1)"
@@ -79,6 +91,19 @@ const Page3Content = () => {
         const data = event.data
         if (!data || data.source !== INJECTED_SCRIPT_ID) return
         if (!shouldCollectUrl(data.url)) return
+
+        const captureMessage: Page3CaptureMessage = {
+          type: "page3/capture",
+          payload: {
+            requestType: data.type === "xhr" ? "xhr" : "fetch",
+            url: data.url,
+            method: typeof data.method === "string" ? data.method : "GET",
+            status: typeof data.status === "number" ? data.status : 0,
+            body: data.body,
+            time: typeof data.time === "number" ? data.time : Date.now()
+          }
+        }
+        chrome.runtime.sendMessage(captureMessage)
 
         if (data.url.includes("/connection/pc/im/shop/contact")) {
           found.contact = true

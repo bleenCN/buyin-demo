@@ -49,6 +49,41 @@ type LogMessage = {
   data?: unknown
 }
 
+type Page3CaptureMessage = {
+  type: "page3/capture"
+  payload: {
+    requestType: "xhr" | "fetch"
+    url: string
+    method: string
+    status: number
+    body: unknown
+    time: number
+  }
+}
+
+type Page3CaptureRecord = Page3CaptureMessage["payload"] & {
+  id: string
+}
+
+type GroupedCaptures = {
+  contact: Page3CaptureRecord | null
+  detail: Page3CaptureRecord | null
+}
+
+const formatJson = (value: unknown) => {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+const resolveCaptureGroup = (url: string): keyof GroupedCaptures | null => {
+  if (url.includes("/connection/pc/im/shop/contact")) return "contact"
+  if (url.includes("/connection/pc/im/shop/detail")) return "detail"
+  return null
+}
+
 const extractShopIds = (body: unknown): string[] => {
   if (!body || typeof body !== "object") return []
   const data = body as {
@@ -79,6 +114,10 @@ const PlasmoOverlay = () => {
   const [targetInput, setTargetInput] = useState("2")
   const [delayInput, setDelayInput] = useState("1000")
   const [status, setStatus] = useState("")
+  const [page3Captures, setPage3Captures] = useState<GroupedCaptures>({
+    contact: null,
+    detail: null
+  })
   const stateRef = useRef(state)
   const queueRef = useRef<string[]>([])
   const cachedShopIdsRef = useRef<string[]>([])
@@ -255,12 +294,27 @@ const PlasmoOverlay = () => {
 
     window.addEventListener("message", onWindowMessage)
 
-    type IncomingMessage = { type: "state/update"; state: CrawlerState } | LogMessage
+    type IncomingMessage =
+      | { type: "state/update"; state: CrawlerState }
+      | LogMessage
+      | Page3CaptureMessage
 
     const onMessage = (message: IncomingMessage) => {
       if (!message || !message.type) return
       if (message.type === "state/update" && message.state) {
         updateFromState(message.state)
+      }
+      if (message.type === "page3/capture") {
+        const group = resolveCaptureGroup(message.payload.url)
+        if (!group) return
+        setPage3Captures((prev) => ({
+          ...prev,
+          [group]: {
+            ...message.payload,
+            id: `${message.payload.time}-${Math.random().toString(16).slice(2)}`
+          }
+        }))
+        return
       }
       if (message.type === "log") {
         const prefix = `[crawler][${message.source}]`
@@ -329,6 +383,10 @@ const PlasmoOverlay = () => {
     seenRef.current = new Set()
     queueRef.current = []
     isProcessingRef.current = false
+    setPage3Captures({
+      contact: null,
+      detail: null
+    })
     if (cachedShopIdsRef.current.length > 0) {
       queueRef.current = [...cachedShopIdsRef.current]
       logToBackground("log", "queue loaded from cache", {
@@ -402,6 +460,40 @@ const PlasmoOverlay = () => {
       </div>
       <div className="plasmo-text-xs plasmo-text-slate-700">
         Interval: {state.delayMs}ms
+      </div>
+      <div className="plasmo-mt-3 plasmo-text-xs plasmo-font-semibold plasmo-text-slate-800">
+        Page3 Captures
+      </div>
+      <div className="plasmo-mt-1 plasmo-max-h-48 plasmo-w-80 plasmo-overflow-auto plasmo-space-y-2">
+        {(["contact", "detail"] as Array<keyof GroupedCaptures>).map((group) => {
+          const item = page3Captures[group]
+          return (
+            <div
+              key={group}
+              className="plasmo-rounded-md plasmo-border plasmo-border-slate-200 plasmo-bg-white plasmo-p-2">
+              <div className="plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-700">
+                {group}
+              </div>
+              {!item ? (
+                <div className="plasmo-text-[11px] plasmo-text-slate-500">
+                  No data yet.
+                </div>
+              ) : (
+                <>
+                  <div className="plasmo-text-[11px] plasmo-text-slate-700">
+                    {item.requestType.toUpperCase()} {item.method} {item.status}
+                  </div>
+                  <div className="plasmo-break-all plasmo-text-[11px] plasmo-text-slate-600">
+                    {item.url}
+                  </div>
+                  <pre className="plasmo-mt-1 plasmo-max-h-28 plasmo-overflow-auto plasmo-whitespace-pre-wrap plasmo-text-[11px] plasmo-text-slate-700">
+                    {formatJson(item.body)}
+                  </pre>
+                </>
+              )}
+            </div>
+          )
+        })}
       </div>
       <div className="plasmo-mt-3 plasmo-flex plasmo-gap-2">
         {state.runActive ? (
