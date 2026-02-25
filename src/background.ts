@@ -255,8 +255,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "page1/open-page2": {
         if (typeof message.url === "string") {
-          logLocal("log", "open page2", { url: message.url })
-          await chrome.tabs.create({ url: message.url, active: true })
+          const active =
+            typeof message.active === "boolean" ? message.active : false
+          logLocal("log", "open page2", { url: message.url, active })
+          await chrome.tabs.create({ url: message.url, active })
         }
         sendResponse({ ok: true })
         return
