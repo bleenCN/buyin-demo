@@ -54,3 +54,15 @@ export const getAllShopRecords = async (): Promise<ShopRecord[]> => {
     req.onerror = () => reject(req.error)
   })
 }
+
+export const clearShopRecords = async (): Promise<void> => {
+  const db = await openDb()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(SHOP_STORE, "readwrite")
+    const store = tx.objectStore(SHOP_STORE)
+    store.clear()
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error)
+  })
+}

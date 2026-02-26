@@ -15,7 +15,8 @@ import {
 import {
   getAllShopRecords,
   getShopRecord,
-  putShopRecord
+  putShopRecord,
+  clearShopRecords
 } from "~services/storage/indexeddb"
 
 type SendResponse = (response?: unknown) => void
@@ -68,6 +69,7 @@ export const handleRuntimeMessage = async (
         completedCount: 0,
         waitingForCompletion: false
       }))
+      await clearShopRecords()
       const next = deps.getState()
       await deps.logLocal("log", "run start", {
         targetCount: next.targetCount,
