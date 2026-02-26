@@ -10,6 +10,8 @@ export const MessageType = {
   TabCloseSelf: "tab/close-self",
   Page1Ready: "page1/ready",
   Page3Capture: "page3/capture",
+  ExportXlsx: "export/xlsx",
+  ExportResult: "export/result",
   Log: "log"
 } as const
 
@@ -60,4 +62,14 @@ export type RuntimeStateResponse = {
 
 export type RuntimeAckResponse = {
   ok: boolean
+}
+
+export type ExportXlsxMessage = {
+  type: typeof MessageType.ExportXlsx
+}
+
+export type ExportResultMessage = {
+  type: typeof MessageType.ExportResult
+  ok: boolean
+  error?: string
 }

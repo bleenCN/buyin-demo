@@ -6,13 +6,12 @@ import { createRuntimeLogger } from "~core/logging/logger"
 import {
   MessageType,
   type CrawlerState,
+  type ExportResultMessage,
   type LogMessage,
-  type Page3CaptureMessage,
   type RuntimeAckResponse,
   type RuntimeStateResponse
 } from "~core/protocol/messages"
-import { extractShopIds, resolveCaptureGroup } from "~domain/capture/parsers"
-import type { GroupedCaptures, Page3CaptureRecord } from "~domain/capture/types"
+import { extractShopIds } from "~domain/capture/parsers"
 import { ShopQueueController } from "~domain/run/queue-controller"
 import { sendRuntimeMessage } from "~services/runtime/messenger"
 import { injectFetchHook } from "~services/injection/script-injector"
@@ -41,11 +40,6 @@ const PAGE2_BASE_URL =
   "https://buyin.jinritemai.com/dashboard/merch-picking-library/shop-detail"
 const INJECTED_SCRIPT_ID = "plasmo-fetch-hook"
 
-const EMPTY_CAPTURES: GroupedCaptures = {
-  contact: null,
-  detail: null
-}
-
 const DEFAULT_STATE: CrawlerState = {
   runActive: false,
   targetCount: 2,
@@ -54,14 +48,6 @@ const DEFAULT_STATE: CrawlerState = {
   delayMs: 1000,
   waitingForCompletion: false,
   page1TabId: null
-}
-
-const formatJson = (value: unknown) => {
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
 }
 
 const isPage1Location = (locationLike: Location) => {
@@ -83,7 +69,6 @@ const PlasmoOverlay = () => {
   const [targetInput, setTargetInput] = useState("2")
   const [delayInput, setDelayInput] = useState("1000")
   const [status, setStatus] = useState("")
-  const [page3Captures, setPage3Captures] = useState<GroupedCaptures>(EMPTY_CAPTURES)
 
   const stateRef = useRef(state)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -197,7 +182,7 @@ const PlasmoOverlay = () => {
       message:
         | { type: typeof MessageType.StateUpdate; state: CrawlerState }
         | LogMessage
-        | Page3CaptureMessage
+        | ExportResultMessage
     ) => {
       if (!message) return
 
@@ -206,17 +191,12 @@ const PlasmoOverlay = () => {
         return
       }
 
-      if (message.type === MessageType.Page3Capture) {
-        const group = resolveCaptureGroup(message.payload.url)
-        if (!group) return
-        const record: Page3CaptureRecord = {
-          ...message.payload,
-          id: `${message.payload.time}-${Math.random().toString(16).slice(2)}`
+      if (message.type === MessageType.ExportResult) {
+        if (message.ok) {
+          setStatus("Exported")
+          return
         }
-        setPage3Captures((prev) => ({
-          ...prev,
-          [group]: record
-        }))
+        setStatus(`Export failed: ${message.error ?? "unknown error"}`)
         return
       }
 
@@ -282,7 +262,6 @@ const PlasmoOverlay = () => {
     // 运行开始时只清理瞬时状态，保持 cache 以支持列表已加载场景
     queueRef.current.resetForRun()
     queueRef.current.loadQueueFromCache()
-    setPage3Captures(EMPTY_CAPTURES)
     setStatus("Running")
     logger.log("run start click", { target, delay: nextDelay })
 
@@ -355,41 +334,6 @@ const PlasmoOverlay = () => {
         Interval: {state.delayMs}ms
       </div>
 
-      <div className="plasmo-mt-3 plasmo-text-xs plasmo-font-semibold plasmo-text-slate-800">
-        Page3 Captures
-      </div>
-      <div className="plasmo-mt-1 plasmo-max-h-48 plasmo-w-80 plasmo-overflow-auto plasmo-space-y-2">
-        {(["contact", "detail"] as const).map((group) => {
-          const item = page3Captures[group]
-          return (
-            <div
-              key={group}
-              className="plasmo-rounded-md plasmo-border plasmo-border-slate-200 plasmo-bg-white plasmo-p-2">
-              <div className="plasmo-text-[11px] plasmo-font-semibold plasmo-text-slate-700">
-                {group}
-              </div>
-              {!item ? (
-                <div className="plasmo-text-[11px] plasmo-text-slate-500">
-                  No data yet.
-                </div>
-              ) : (
-                <>
-                  <div className="plasmo-text-[11px] plasmo-text-slate-700">
-                    {item.requestType.toUpperCase()} {item.method} {item.status}
-                  </div>
-                  <div className="plasmo-break-all plasmo-text-[11px] plasmo-text-slate-600">
-                    {item.url}
-                  </div>
-                  <pre className="plasmo-mt-1 plasmo-max-h-28 plasmo-overflow-auto plasmo-whitespace-pre-wrap plasmo-text-[11px] plasmo-text-slate-700">
-                    {formatJson(item.body)}
-                  </pre>
-                </>
-              )}
-            </div>
-          )
-        })}
-      </div>
-
       <div className="plasmo-mt-3 plasmo-flex plasmo-gap-2">
         {state.runActive ? (
           <button
@@ -399,13 +343,29 @@ const PlasmoOverlay = () => {
             Stop
           </button>
         ) : (
-          <button
-            type="button"
-            onClick={startRun}
-            disabled={!canStart}
-            className="plasmo-rounded-md plasmo-bg-emerald-500 plasmo-px-3 plasmo-py-1 plasmo-text-xs plasmo-text-white disabled:plasmo-opacity-50">
-            Start
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={startRun}
+              disabled={!canStart}
+              className="plasmo-rounded-md plasmo-bg-emerald-500 plasmo-px-3 plasmo-py-1 plasmo-text-xs plasmo-text-white disabled:plasmo-opacity-50">
+              Start
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                setStatus("Exporting...")
+                const result = await sendRuntimeMessage<RuntimeAckResponse>({
+                  type: MessageType.ExportXlsx
+                })
+                if (!result.ok || !result.response?.ok) {
+                  setStatus("Export failed")
+                }
+              }}
+              className="plasmo-rounded-md plasmo-bg-slate-700 plasmo-px-3 plasmo-py-1 plasmo-text-xs plasmo-text-white">
+              Export
+            </button>
+          </>
         )}
       </div>
 

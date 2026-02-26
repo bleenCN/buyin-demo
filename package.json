@@ -13,7 +13,8 @@
     "plasmo": "0.90.5",
     "react": "18.2.0",
     "react-dom": "18.2.0",
-    "tailwindcss": "3.4.1"
+    "tailwindcss": "3.4.1",
+    "xlsx": "0.18.5"
   },
   "devDependencies": {
     "@ianvs/prettier-plugin-sort-imports": "4.1.1",
@@ -28,7 +29,8 @@
   "manifest": {
     "permissions": [
       "storage",
-      "tabs"
+      "tabs",
+      "downloads"
     ],
     "host_permissions": [
       "https://*/*"
